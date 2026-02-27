@@ -1,0 +1,11 @@
+[Unit]
+Description=Kakebo auto-update from git
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=tim
+Group=tim
+SyslogIdentifier=kakebo-auto-update
+ExecStart=/home/tim/kakebo/deploy/kakebo-auto-update.sh

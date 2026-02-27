@@ -1,0 +1,17 @@
+[Unit]
+Description=Kakebo tg bot
+After=network.target
+
+[Service]
+Restart=always
+RestartSec=5
+User=tim
+Group=tim
+SyslogIdentifier=kakebo-tg-bot
+WorkingDirectory=/home/tim/kakebo
+
+Environment="***masked***"
+ExecStart=/home/tim/kakebo/venv/bin/python tg_stuff.py
+
+[Install]
+WantedBy=multi-user.target
