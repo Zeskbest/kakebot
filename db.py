@@ -1,7 +1,11 @@
+import os
+from pathlib import Path
 from pprint import pprint
 
-from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 import sqlalchemy as sa
+from sqlalchemy.orm import declarative_base, relationship
+
+_BASE_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
 
 Base = declarative_base()
 
@@ -29,7 +33,7 @@ class Payment(Base):
     category = relationship("Category", back_populates="payments")
 
 
-engine = sa.create_engine("sqlite:///kakebo.db")
+engine = sa.create_engine(f"sqlite:///{_BASE_DIR / 'kakebo.db'}")
 # Session = sessionmaker(bind=engine)
 # session = Session()
 

@@ -18,13 +18,13 @@ make db
 
 ## Dependencies
 
-Install with `pip install -r requirements.txt`. Key deps: `python-telegram-bot` (async), `sqlalchemy`.
+Install with `pip install -r requirements.txt`. Key deps: `python-telegram-bot` (async), `sqlalchemy`, `python-dotenv`. Env vars can be set via a `.env` file in the project root.
 
 ## Architecture
 
 Three-file structure with clear separation:
 
-- **tg_stuff.py** — Telegram bot handlers and conversation state machine. Entry point. Uses `python-telegram-bot` async framework. Conversation flow: `/menu` → category selection keyboard → user enters amount (+ optional comment on next line) → payment saved.
+- **tg_stuff.py** — Telegram bot handlers and conversation state machine. Entry point. Uses `python-telegram-bot` async framework. Commands: `/menu` (start expense flow), `/help` (category descriptions), `/total` (spending stats), `/undo` (delete last payment).
 - **db.py** — SQLAlchemy ORM models (`Category`, `Payment`) and database initialization. Two tables: `category` (8 predefined categories with Russian descriptions) and `payment` (expense records with integer amounts). Running `db.py` directly recreates the schema and seeds categories.
 - **db_adaptor.py** — Database query layer. Functions for adding payments and fetching aggregated statistics.
 
@@ -35,5 +35,5 @@ State machine uses a `Stage` class stored in `context.user_data` with states: `m
 - Python 3.9+ type hints (`list[str]`, `str | None`)
 - UI text and category comments are in Russian
 - Access restricted to Telegram user IDs from `ALLOWED_USER_IDS` env var (comma-separated) via `whitelist_user_deco` decorator
-- Database path hardcoded as `kakebo.db` in working directory
+- Database path resolves to `kakebo.db` relative to `db.py` (not CWD)
 - Payment amounts are integers (no decimals)

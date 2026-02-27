@@ -2,7 +2,9 @@ import functools
 import os
 import sys
 import traceback
-from curses.ascii import isdigit
+
+from dotenv import load_dotenv
+load_dotenv()
 
 from telegram import (
     Update,
@@ -17,7 +19,7 @@ from telegram.ext import (
     filters,
 )
 
-from db_adaptor import get_category_names, get_category_help, add_payment, get_total_stats
+from db_adaptor import get_category_names, get_category_help, add_payment, get_total_stats, delete_last_payment
 
 ALLOWED_USER_IDS = [int(x) for x in os.environ["ALLOWED_USER_IDS"].split(",")]
 TOKEN = os.environ["TELEGRAM_TOKEN"]
@@ -37,6 +39,7 @@ class Stage:
     def set(cls, user_data: dict[str, str], stage: str | None):
         if stage is None:
             user_data.pop("stage", None)
+            return
         user_data["stage"] = stage
 
 
@@ -44,7 +47,7 @@ def whitelist_user_deco(handler):
     @functools.wraps(handler)
     async def real_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context._user_id not in ALLOWED_USER_IDS:
-            return update.message.reply_text("unauthorised")
+            return await update.message.reply_text("unauthorised")
         await handler(update, context)
 
     return real_handler
@@ -97,6 +100,17 @@ async def total_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         get_total_stats(),
         reply_markup=category_keyboard(),
     )
+
+
+# /undo command
+@whitelist_user_deco
+async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    Stage.set(context.user_data, None)
+    result = delete_last_payment()
+    text = "No payments to undo."
+    if result is not None:
+        text = result
+    await update.message.reply_text(text, reply_markup=category_keyboard())
 
 
 # all text comes here
@@ -153,6 +167,7 @@ def main():
     app.add_handler(CommandHandler("menu", menu_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("total", total_cmd))
+    app.add_handler(CommandHandler("undo", undo_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     app.run_polling()
 

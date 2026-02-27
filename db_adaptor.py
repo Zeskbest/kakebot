@@ -23,12 +23,25 @@ def add_payment(category_name: str, amount: int, comment: str | None):
         )
 
 
+def delete_last_payment() -> str | None:
+    with engine.begin() as conn:
+        last = conn.execute(
+            sa.select(Payment).order_by(Payment.id.desc()).limit(1)
+        ).first()
+        if last is None:
+            return None
+        conn.execute(sa.delete(Payment).where(Payment.id == last.id))
+    return f"Deleted: {last.category_name}, {last.sum}, {last.comment or ''}"
+
+
 def get_total_stats():
     with engine.begin() as conn:
         payments = conn.execute(
             sa.select(Payment.category_name, sa.func.sum(Payment.sum)).group_by(Payment.category_name)
         ).fetchall()
     total = sum((s for _, s in payments))
+    if total == 0:
+        return "No payments recorded yet."
     return f"Total spent: {total}\nRatio:\n" + "\n".join(
         f"* {c}: {s / total * 100:.4}%"
         for c, s in payments

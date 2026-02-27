@@ -1,1 +1,5 @@
-/kakebo.db
+kakebo.db
+venv/
+__pycache__/
+.env
+*.pyc
