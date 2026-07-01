@@ -14,7 +14,15 @@ TELEGRAM_TOKEN=<token> ALLOWED_USER_IDS=123,456 python tg_stuff.py
 
 # Open the SQLite database directly
 make db
+
+# Debug the Yandex mail fetch standalone (dumps last N emails)
+python mail_worker.py 10
 ```
+
+The optional mail worker starts automatically when `YANDEX_EMAIL` /
+`YANDEX_APP_PASSWORD` are set (IMAP host defaults to `imap.yandex.com`, override
+via `YANDEX_IMAP_HOST`). Without them the bot runs normally, worker disabled.
+Poll cadence via `MAIL_POLL_INTERVAL` (secs, default 60).
 
 ## Dependencies
 
@@ -22,11 +30,13 @@ Install with `pip install -r requirements.txt`. Key deps: `python-telegram-bot` 
 
 ## Architecture
 
-Three-file structure with clear separation:
+Five-file structure with clear separation:
 
-- **tg_stuff.py** — Telegram bot handlers and conversation state machine. Entry point. Uses `python-telegram-bot` async framework. Commands: `/menu` (start expense flow), `/help` (category descriptions), `/total` (spending stats), `/undo` (delete last payment).
-- **db.py** — SQLAlchemy ORM models (`Category`, `Payment`) and database initialization. Two tables: `category` (8 predefined categories with Russian descriptions) and `payment` (expense records with integer amounts). Running `db.py` directly recreates the schema and seeds categories.
-- **db_adaptor.py** — Database query layer. Functions for adding payments and fetching aggregated statistics.
+- **tg_stuff.py** — Telegram bot handlers and conversation state machine. Entry point. Uses `python-telegram-bot` async framework. Commands: `/menu` (start expense flow), `/help` (category descriptions), `/total` (spending stats), `/undo` (delete last payment). Also hosts the mail worker: a background asyncio poll loop (started in `post_init`) plus the inline-keyboard `CallbackQueryHandler` for categorising emailed payments.
+- **db.py** — SQLAlchemy ORM models and database initialization. Tables: `category` (8 predefined categories with Russian descriptions), `payment` (expense records with integer amounts), `merchant_category` (remembered merchant→category for auto-logging), `processed_email` (dedup log). Running `db.py` directly **drops** and recreates the schema and seeds categories.
+- **db_adaptor.py** — Database query layer. Functions for adding/undoing/recategorising payments, fetching stats, merchant-memory lookups, and email dedup.
+- **mail_worker.py** — Yandex IMAP client (`YandexMailClient`, stdlib `imaplib`/`email`) returning `MailMessage` objects. Run directly for a debug dump.
+- **parsers.py** — Per-bank regex parsers (`parse_mail`, sender→parser `PARSERS` registry) turning a bank email into a `ParsedPayment` (amount rounded to int THB, merchant, kind, ref). Currently supports K PLUS/Kasikornbank (plain text) and Krungsri (HTML).
 
 State machine uses a `Stage` class stored in `context.user_data` with states: `menu`/`None` → `category_chosen` → back to menu.
 
