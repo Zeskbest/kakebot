@@ -1,8 +1,8 @@
 import os
 from pathlib import Path
-from pprint import pprint
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import declarative_base, relationship
 
 _BASE_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
@@ -57,7 +57,9 @@ engine = sa.create_engine(f"sqlite:///{_BASE_DIR / 'kakebo.db'}")
 # session = Session()
 
 if __name__ == '__main__':
-    Base.metadata.drop_all(engine)
+    # Incremental: create_all only adds missing tables; the category seed is
+    # idempotent (skips categories that already exist), so re-running is safe
+    # and preserves existing payments.
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
         for i, (c, comment) in enumerate({
@@ -70,9 +72,8 @@ if __name__ == '__main__':
             "Special occasions": "подарки, цветы, волосы, бордеры, визы",
             "Rental": "дом, машина",
         }.items()):
-            conn.execute(sa.insert(Category).values(id=i, name=c, comment=comment))
-    with engine.begin() as conn:
-        res = conn.execute(sa.select(Category)).fetchall()
-        pprint(("Category", res))
-        res = conn.execute(sa.select(Payment)).fetchall()
-        pprint(("Payment", res))
+            conn.execute(
+                sqlite_insert(Category)
+                .values(id=i, name=c, comment=comment)
+                .on_conflict_do_nothing(index_elements=[Category.name])
+            )
