@@ -33,6 +33,22 @@ class Payment(Base):
     category = relationship("Category", back_populates="payments")
 
 
+class MerchantCategory(Base):
+    """Remembered merchant -> category mapping ("remember this merchant forever")."""
+    __tablename__ = "merchant_category"
+
+    merchant = sa.Column(sa.Text, primary_key=True)
+    category_name = sa.Column(sa.Text, sa.ForeignKey("category.name"), nullable=False)
+
+
+class ProcessedEmail(Base):
+    """Dedup log so each bank email is handled at most once."""
+    __tablename__ = "processed_email"
+
+    message_id = sa.Column(sa.Text, primary_key=True)
+    processed_at = sa.Column(sa.DateTime, server_default=sa.text("DATETIME('now')"))
+
+
 engine = sa.create_engine(f"sqlite:///{_BASE_DIR / 'kakebo.db'}")
 # Session = sessionmaker(bind=engine)
 # session = Session()
