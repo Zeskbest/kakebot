@@ -77,14 +77,26 @@ def is_email_processed(message_id: str) -> bool:
         ).first() is not None
 
 
-def mark_email_processed(message_id: str) -> None:
-    """Record an email as handled. Idempotent (ignores duplicates)."""
+def mark_email_processed(message_id: str, email_date=None) -> None:
+    """Record an email as handled. Idempotent (ignores duplicates).
+
+    `email_date` is the email's own Date (UTC, naive) used to anchor the
+    incremental fetch window.
+    """
     with engine.begin() as conn:
         exists = conn.execute(
             sa.select(ProcessedEmail.message_id).where(ProcessedEmail.message_id == message_id)
         ).first()
         if exists is None:
-            conn.execute(sa.insert(ProcessedEmail).values(message_id=message_id))
+            conn.execute(
+                sa.insert(ProcessedEmail).values(message_id=message_id, email_date=email_date)
+            )
+
+
+def get_last_processed_email_date():
+    """Most recent email_date among processed emails (UTC naive), or None."""
+    with engine.begin() as conn:
+        return conn.execute(sa.select(sa.func.max(ProcessedEmail.email_date))).scalar()
 
 
 def get_total_stats():

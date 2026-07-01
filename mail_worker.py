@@ -149,6 +149,31 @@ class YandexMailClient:
             messages.append(_parse_message(msg_data[0][1]))
         return messages
 
+    def fetch_since(self, since: datetime | None, mailbox: str = "INBOX") -> list[MailMessage]:
+        """Fetch messages received on/after `since` (oldest first); `since=None`
+        fetches the entire mailbox.
+
+        IMAP SEARCH SINCE is date-granular (whole days), so this returns a
+        superset of `since`; the caller dedups by Message-ID. Returned in
+        ascending IMAP order = chronological.
+        """
+        assert self.conn is not None, "call connect() first"
+        self.conn.select(mailbox, readonly=True)
+        if since is None:
+            typ, data = self.conn.search(None, "ALL")
+        else:
+            typ, data = self.conn.search(None, "SINCE", since.strftime("%d-%b-%Y"))
+        if typ != "OK":
+            raise RuntimeError(f"IMAP search failed: {typ} {data}")
+        ids = data[0].split()
+        messages = []
+        for msg_id in ids:
+            typ, msg_data = self.conn.fetch(msg_id, "(RFC822)")
+            if typ != "OK" or not msg_data or msg_data[0] is None:
+                continue
+            messages.append(_parse_message(msg_data[0][1]))
+        return messages
+
     def list_mailboxes(self) -> list[str]:
         assert self.conn is not None, "call connect() first"
         typ, data = self.conn.list()
