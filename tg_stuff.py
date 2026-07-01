@@ -4,6 +4,7 @@ import os
 import sys
 import traceback
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -37,6 +38,7 @@ from db_adaptor import (
     set_merchant_category,
     is_email_processed,
     mark_email_processed,
+    get_last_processed_email_date,
 )
 from mail_worker import YandexMailClient, MailMessage, mail_configured
 from parsers import parse_mail, sender_address, PARSERS
@@ -47,8 +49,11 @@ TOKEN = os.environ["TELEGRAM_TOKEN"]
 # Mail worker config
 NOTIFY_CHAT_ID = ALLOWED_USER_IDS[0]
 MAIL_POLL_INTERVAL = int(os.environ.get("MAIL_POLL_INTERVAL", "60"))
-MAIL_FETCH_LIMIT = int(os.environ.get("MAIL_FETCH_LIMIT", "15"))
 MAIL_START_DELAY = int(os.environ.get("MAIL_START_DELAY", "5"))
+# Each poll rescans mail since (last processed email date - RESCAN_HOURS), to
+# catch delayed/out-of-order deliveries. The first run (empty DB) scans the
+# entire inbox.
+MAIL_RESCAN_HOURS = int(os.environ.get("MAIL_RESCAN_HOURS", "1"))
 
 # Friendly bank labels keyed by sender address
 BANK_NAMES = {
@@ -216,23 +221,42 @@ def _inline_categories(token: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def _fetch_recent_blocking(limit: int) -> list[MailMessage]:
-    """Blocking IMAP fetch — must be run in a worker thread."""
+def _to_utc_naive(dt: datetime | None) -> datetime | None:
+    """Normalise a (possibly tz-aware) datetime to naive UTC for storage/compare."""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _fetch_since_blocking(since: datetime | None) -> list[MailMessage]:
+    """Blocking IMAP fetch — must be run in a worker thread. since=None -> all."""
     with YandexMailClient() as client:
-        return client.fetch_recent(limit=limit)
+        return client.fetch_since(since)
+
+
+def _fetch_window_start() -> datetime | None:
+    """Anchor the incremental fetch: last processed email date - RESCAN_HOURS.
+    Returns None on the first run (empty DB) to fetch the entire inbox."""
+    last = get_last_processed_email_date()
+    if last is None:
+        return None
+    return last - timedelta(hours=MAIL_RESCAN_HOURS)
 
 
 async def poll_mail_once(app: Application) -> None:
-    """Fetch recent mail, handle any new bank payment emails (oldest first)."""
-    mails = await asyncio.to_thread(_fetch_recent_blocking, MAIL_FETCH_LIMIT)
-    for mail in reversed(mails):  # newest-first -> chronological
+    """Fetch inbox since the rescan window, handle new bank emails (oldest first)."""
+    since = _fetch_window_start()
+    mails = await asyncio.to_thread(_fetch_since_blocking, since)
+    for mail in mails:  # ascending IMAP order == chronological
         if sender_address(mail) not in PARSERS:
             continue  # only bank senders touch the dedup log
         message_id = mail.message_id or f"{mail.sender}|{mail.date}|{mail.subject}"
         if is_email_processed(message_id):
             continue
         parsed = parse_mail(mail)
-        mark_email_processed(message_id)
+        mark_email_processed(message_id, email_date=_to_utc_naive(mail.date))
         if parsed is None:
             continue
         await announce_payment(app, mail, parsed)

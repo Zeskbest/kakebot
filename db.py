@@ -47,6 +47,9 @@ class ProcessedEmail(Base):
 
     message_id = sa.Column(sa.Text, primary_key=True)
     processed_at = sa.Column(sa.DateTime, server_default=sa.text("DATETIME('now')"))
+    # The email's own Date header (UTC, naive). Anchors the incremental fetch
+    # window (SINCE last email date - 1h) so we don't rescan the whole inbox.
+    email_date = sa.Column(sa.DateTime)
 
 
 engine = sa.create_engine(f"sqlite:///{_BASE_DIR / 'kakebo.db'}")
