@@ -7,7 +7,7 @@ SERVICE="kakebo-tg-bot"
 
 cd "$REPO_DIR"
 
-# Ensure this is a git repo on the extim@tjwqkuujq89a:~/kakebo$ cat /etc/systemd/system/kakebo-tg-bot.servicepected branch
+# Ensure this is a git repo on the expected branch
 current_branch=$(git rev-parse --abbrev-ref HEAD)
 if [ "$current_branch" != "$BRANCH" ]; then
     echo "Not on $BRANCH branch (on $current_branch), skipping update."
