@@ -47,7 +47,13 @@ ALLOWED_USER_IDS = [int(x) for x in os.environ["ALLOWED_USER_IDS"].split(",")]
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 
 # Mail worker config
-NOTIFY_CHAT_ID = ALLOWED_USER_IDS[0]
+# Which user (index into ALLOWED_USER_IDS) categorises each bank's payments:
+# K PLUS/Kasikornbank -> first user, Krungsri -> second user. Missing index
+# (e.g. only one user configured) falls back to the first user.
+BANK_NOTIFY_INDEX = {
+    "kplus@kasikornbank.com": 0,
+    "admin@krungsri.com": 1,
+}
 MAIL_POLL_INTERVAL = int(os.environ.get("MAIL_POLL_INTERVAL", "60"))
 MAIL_START_DELAY = int(os.environ.get("MAIL_START_DELAY", "5"))
 # Each poll rescans mail since (last processed email date - RESCAN_HOURS), to
@@ -221,6 +227,14 @@ def _inline_categories(token: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def _notify_chat_id(sender: str) -> int:
+    """Telegram chat that should categorise payments from this bank sender."""
+    idx = BANK_NOTIFY_INDEX.get(sender, 0)
+    if idx >= len(ALLOWED_USER_IDS):
+        idx = 0
+    return ALLOWED_USER_IDS[idx]
+
+
 def _to_utc_naive(dt: datetime | None) -> datetime | None:
     """Normalise a (possibly tz-aware) datetime to naive UTC for storage/compare."""
     if dt is None:
@@ -264,7 +278,9 @@ async def poll_mail_once(app: Application) -> None:
 
 async def announce_payment(app: Application, mail: MailMessage, parsed) -> None:
     """Auto-log a remembered merchant, else prompt the user for a category."""
-    bank = BANK_NAMES.get(sender_address(mail), sender_address(mail))
+    sender = sender_address(mail)
+    bank = BANK_NAMES.get(sender, sender)
+    chat_id = _notify_chat_id(sender)
     token = uuid.uuid4().hex[:8]
     entry = {
         "merchant": parsed.merchant,
@@ -297,7 +313,7 @@ async def announce_payment(app: Application, mail: MailMessage, parsed) -> None:
         )
         keyboard = _inline_categories(token)
 
-    await app.bot.send_message(NOTIFY_CHAT_ID, text, reply_markup=keyboard)
+    await app.bot.send_message(chat_id, text, reply_markup=keyboard)
 
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
