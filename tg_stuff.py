@@ -56,9 +56,9 @@ BANK_NOTIFY_INDEX = {
 }
 MAIL_POLL_INTERVAL = int(os.environ.get("MAIL_POLL_INTERVAL", "60"))
 MAIL_START_DELAY = int(os.environ.get("MAIL_START_DELAY", "5"))
-# Each poll rescans mail since (last processed email date - RESCAN_HOURS), to
-# catch delayed/out-of-order deliveries. The first run (empty DB) scans the
-# entire inbox.
+# Incremental polls rescan mail since (last processed email date - RESCAN_HOURS),
+# to catch delayed/out-of-order deliveries. The first poll after each (re)start
+# ignores this window and rescans the whole mailbox (see _full_scan_pending).
 MAIL_RESCAN_HOURS = int(os.environ.get("MAIL_RESCAN_HOURS", "1"))
 
 # Friendly bank labels keyed by sender address
@@ -215,6 +215,12 @@ async def amount_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # "expired", which we handle gracefully.
 PENDING: dict[str, dict] = {}
 
+# The first poll after every process (re)start rescans the entire mailbox to
+# guarantee mail->db consistency (PENDING is in-memory and lost on restart, and
+# the incremental window could miss anything delivered while the bot was down).
+# Subsequent polls use the incremental window. Reset per-process.
+_full_scan_pending = True
+
 
 def _inline_categories(token: str) -> InlineKeyboardMarkup:
     """Category buttons, 3 per row; callback data references categories by index."""
@@ -260,8 +266,17 @@ def _fetch_window_start() -> datetime | None:
 
 
 async def poll_mail_once(app: Application) -> None:
-    """Fetch inbox since the rescan window, handle new bank emails (oldest first)."""
-    since = _fetch_window_start()
+    """Handle new bank emails (oldest first).
+
+    The first poll after a (re)start rescans the whole mailbox for mail->db
+    consistency; later polls fetch only the incremental window. The dedup log
+    (processed_email) keeps both idempotent."""
+    global _full_scan_pending
+    if _full_scan_pending:
+        since = None  # full mailbox rescan on (re)start
+        _full_scan_pending = False
+    else:
+        since = _fetch_window_start()
     mails = await asyncio.to_thread(_fetch_since_blocking, since)
     for mail in mails:  # ascending IMAP order == chronological
         if sender_address(mail) not in PARSERS:
