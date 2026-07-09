@@ -1,9 +1,21 @@
-"""Per-bank parsers that turn a bank-notification email into a ParsedPayment.
+"""Turn a bank-notification email into a ParsedPayment.
 
-Parsing is regex-based, one parser per sender address. Emails carry both a Thai
-and an English section; we key off the English labels (e.g. "Amount (THB):")
-which are unambiguous. Amounts are THB decimals but the app stores integers, so
-we round to the nearest whole unit and keep the original string in `raw_amount`.
+Both supported banks lay the transaction out as ``Label: value`` pairs, but with
+different structure, so there's one parser per sender:
+
+* **K PLUS** (Kasikornbank) — plain text, a Thai section followed by an English
+  one. We anchor on the (unambiguous) English labels and read each value to the
+  end of its line. This matters: the per-transaction reference (Payment Code /
+  MERCHANTNO.1 / SHOP ID / Reference 1 / Mobile No.) lives on the line *after*
+  the merchant, so a line-bounded value keeps the merchant key clean.
+* **Krungsri** (Bank of Ayudhya) — an HTML table where each label and its value
+  sit in adjacent cells. We strip tags, collapse whitespace, then slice the flat
+  text into ``{label: value}`` by letting each value run until the next known
+  label (so e.g. a "To e-Wallet" row between "To Biller" and "Amount" can't leak
+  into the merchant).
+
+Amounts are THB with decimals but the app stores integers, so we round to the
+nearest whole unit and keep the original string in ``raw_amount``.
 """
 import html
 import re
@@ -15,8 +27,35 @@ from mail_worker import MailMessage
 
 CURRENCY = "THB"
 
-# English amount label, shared by every bank ("Amount (THB): 1,207.21").
-AMOUNT_RE = re.compile(r"Amount\s*\(THB\)\s*:\s*([\d,]+\.\d{2})", re.I)
+# English amount label, shared by both banks ("Amount (THB): 1,207.21").
+_AMOUNT_RE = re.compile(r"Amount\s*\(THB\)\s*:\s*([\d,]+\.\d{2})", re.I)
+_DECIMAL_RE = re.compile(r"[\d,]+\.\d{2}")
+
+# K PLUS merchant/counterparty label, in priority order (bill payment first,
+# then the two transfer flavours). Read to end-of-line.
+_KPLUS_MERCHANT_LABELS = ["Company Name", "Received Name", "Account Name"]
+
+# Krungsri: every label we recognise. Order is irrelevant (the boundary regex is
+# built longest-first so no label shadows a longer one it prefixes); non-merchant
+# labels are listed only so they terminate the preceding value.
+_KRUNGSRI_FIELDS = [
+    "Amount (THB)", "Fee (THB)", "To Biller", "To PromptPay ID", "To e-Wallet",
+    "Transaction Result", "Type of Transaction", "From Account", "Merchant ID",
+    "Transaction ID", "Reference No", "Date/Time", "Memo",
+]
+_KRUNGSRI_MERCHANT_LABELS = ["To Biller", "To PromptPay ID"]
+
+# A label, an optional trailing dot (Krungsri's "Reference No.:"), then a colon.
+_SEP = r"\s*\.?\s*:\s*"
+_KRUNGSRI_LABEL_ALT = "|".join(
+    re.escape(f) for f in sorted(_KRUNGSRI_FIELDS, key=len, reverse=True)
+)
+# value = everything up to the next known label (or end of text).
+_KRUNGSRI_FIELD_RE = re.compile(
+    rf"(?P<label>{_KRUNGSRI_LABEL_ALT}){_SEP}(?P<value>.*?)"
+    rf"(?=(?:{_KRUNGSRI_LABEL_ALT}){_SEP}|$)",
+    re.S,
+)
 
 
 @dataclass
@@ -34,11 +73,7 @@ class ParsedPayment:
 
 
 def _flatten(text: str) -> str:
-    """Strip HTML tags, unescape entities, collapse all whitespace to spaces.
-
-    This normalises both the plain-text (K PLUS) and HTML (Krungsri) bodies so
-    label/value pairs sit on a single line regardless of the original wrapping.
-    """
+    """Strip HTML tags, unescape entities, collapse all whitespace to spaces."""
     text = re.sub(r"<[^>]+>", " ", text)
     text = html.unescape(text)
     return re.sub(r"\s+", " ", text).strip()
@@ -52,33 +87,27 @@ def _is_success(mail: MailMessage) -> bool:
     return "success" in (mail.subject or "").lower()
 
 
+def _kind(mail: MailMessage) -> str:
+    """Transaction kind from the (English) subject line."""
+    return "bill_payment" if "bill payment" in (mail.subject or "").lower() else "transfer"
+
+
 def parse_kplus(mail: MailMessage) -> ParsedPayment | None:
-    """Kasikornbank / K PLUS — plain text, Thai + English sections.
-
-    Two flavours share the English "Amount (THB):" label:
-      * Bill Payment        -> merchant from "Company Name:"
-      * PromptPay Transfer  -> merchant from "Received Name:"
-
-    Parsed line-wise (not flattened): the merchant name occupies its own line,
-    while per-transaction refs (MERCHANTNO.1, Payment Code, SHOP ID, Reference 1)
-    live on the *following* line and must NOT leak into the merchant key.
-    """
+    """Kasikornbank / K PLUS — plain text, parsed line-wise (see module docstring)."""
     if not _is_success(mail):
         return None
     body = mail.body
-    amount_m = AMOUNT_RE.search(body)
+    amount_m = _AMOUNT_RE.search(body)
     if not amount_m:
         return None
 
     merchant = None
-    kind = None
-    company = re.search(r"Company\s*Name\s*:\s*(.+)", body, re.I)
-    if company:
-        merchant, kind = company.group(1).strip(), "bill_payment"
-    else:
-        received = re.search(r"Received\s*Name\s*:\s*(.+)", body, re.I)
-        if received:
-            merchant, kind = received.group(1).strip(), "transfer"
+    for label in _KPLUS_MERCHANT_LABELS:
+        # `.` excludes newline, so the value stops at end of line (before the ref).
+        m = re.search(rf"{label}\s*:\s*(.+)", body, re.I)
+        if m and m.group(1).strip():
+            merchant = m.group(1).strip()
+            break
     if not merchant:
         return None
 
@@ -86,39 +115,42 @@ def parse_kplus(mail: MailMessage) -> ParsedPayment | None:
     return ParsedPayment(
         amount=_amount_to_int(amount_m.group(1)),
         merchant=merchant,
-        kind=kind,
+        kind=_kind(mail),
         external_ref=ref_m.group(1) if ref_m else None,
         raw_amount=amount_m.group(1),
     )
 
 
-def parse_krungsri(mail: MailMessage) -> ParsedPayment | None:
-    """Krungsri (Bank of Ayudhya) — HTML table, bill payments.
+def _krungsri_fields(body: str) -> dict[str, str]:
+    """Map every recognised Krungsri label to its value (last wins)."""
+    flat = _flatten(body)
+    return {m.group("label"): m.group("value").strip()
+            for m in _KRUNGSRI_FIELD_RE.finditer(flat)}
 
-    Merchant from "To Biller:" (Thai text); falls back to "Merchant ID:".
-    """
+
+def parse_krungsri(mail: MailMessage) -> ParsedPayment | None:
+    """Krungsri (Bank of Ayudhya) — HTML table, parsed via label boundaries."""
     if not _is_success(mail):
         return None
-    t = _flatten(mail.body)
-    amount_m = AMOUNT_RE.search(t)
+    fields = _krungsri_fields(mail.body)
+
+    amount_m = _DECIMAL_RE.search(fields.get("Amount (THB)", ""))
     if not amount_m:
         return None
 
-    biller = re.search(r"To\s*Biller\s*:\s*(.+?)\s+Amount\s*\(THB\)", t, re.I)
-    merchant = biller.group(1).strip() if biller else None
-    if not merchant:
-        mid = re.search(r"Merchant\s*ID\s*:\s*(\S+)", t, re.I)
-        merchant = mid.group(1) if mid else None
+    merchant = next(
+        (fields[label] for label in _KRUNGSRI_MERCHANT_LABELS if fields.get(label)),
+        None,
+    )
     if not merchant:
         return None
 
-    ref_m = re.search(r"Reference\s*No\.?\s*:\s*(\S+)", t, re.I)
     return ParsedPayment(
-        amount=_amount_to_int(amount_m.group(1)),
+        amount=_amount_to_int(amount_m.group(0)),
         merchant=merchant,
-        kind="bill_payment",
-        external_ref=ref_m.group(1) if ref_m else None,
-        raw_amount=amount_m.group(1),
+        kind=_kind(mail),
+        external_ref=fields.get("Reference No"),
+        raw_amount=amount_m.group(0),
     )
 
 
